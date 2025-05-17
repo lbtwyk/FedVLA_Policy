@@ -325,17 +325,25 @@ def train(args):
     try:
         import inspect
         sig = inspect.signature(RobotEpisodeDataset.__init__)
-        dataset_args = {'base_dir': args.data_dir, 'num_episodes': args.num_episodes}
+        dataset_args = {
+            'base_dir': args.data_dir,
+            'num_episodes': args.num_episodes,
+            'flat_structure': False  # Training dataset uses nested structure
+        }
         if 'transform' in sig.parameters: dataset_args['transform'] = image_transform
         train_dataset = RobotEpisodeDataset(**dataset_args)
     except Exception as e:
         logging.exception(f"Error initializing training dataset from {args.data_dir}")
         return
     if len(train_dataset) == 0: logging.error("Training dataset is empty."); return
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                                  num_workers=args.num_workers,
-                                  pin_memory=True if device.type in ['cuda', 'mps'] else False,
-                                  collate_fn=custom_collate_fn)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory if device.type in ['cuda', 'mps'] else False,
+        collate_fn=custom_collate_fn
+    )
     logging.info(f"Training dataset loaded: {len(train_dataset)} samples.")
 
     # --- Evaluation Dataset and DataLoader ---
@@ -345,9 +353,21 @@ def train(args):
         eval_num_episodes = args.eval_num_episodes if args.eval_num_episodes else args.num_episodes
         if eval_data_dir == args.data_dir and eval_num_episodes > args.num_episodes:
             eval_num_episodes = args.num_episodes
+
+        # Determine if validation dataset has flat structure
+        # If using the same directory as training, use the same structure
+        # If using the dedicated validation directory, use flat structure
+        use_flat_structure = eval_data_dir != args.data_dir
+
         try:
-            eval_dataset_args = {'base_dir': eval_data_dir, 'num_episodes': eval_num_episodes}
+            eval_dataset_args = {
+                'base_dir': eval_data_dir,
+                'num_episodes': eval_num_episodes,
+                'flat_structure': use_flat_structure  # True for dedicated validation dataset
+            }
             if 'transform' in sig.parameters: eval_dataset_args['transform'] = image_transform
+
+            logging.info(f"Loading evaluation dataset from {eval_data_dir} with {'flat' if use_flat_structure else 'nested'} structure")
             eval_dataset = RobotEpisodeDataset(**eval_dataset_args)
         except Exception as e:
             logging.exception(f"Error initializing evaluation dataset from {eval_data_dir}. Disabling evaluation.")
@@ -356,7 +376,7 @@ def train(args):
         if eval_dataset and len(eval_dataset) > 0:
             eval_dataloader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False,
                                          num_workers=args.num_workers,
-                                         pin_memory=True if device.type in ['cuda', 'mps'] else False,
+                                         pin_memory=args.pin_memory if device.type in ['cuda', 'mps'] else False,
                                          collate_fn=custom_collate_fn)
             logging.info(f"Evaluation dataset loaded: {len(eval_dataset)} samples.")
         else:
@@ -699,10 +719,10 @@ if __name__ == "__main__":
 
     # Paths and Directories
     parser.add_argument('--data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for training dataset')
-    parser.add_argument('--eval_data_dir', type=str, default=None, help='Base directory for evaluation dataset (uses data_dir if None)')
+    parser.add_argument('--eval_data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes_val', help='Base directory for evaluation dataset')
     parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints')
     parser.add_argument('--num_episodes', type=int, default=97, help='Number of episodes to load for training')
-    parser.add_argument('--eval_num_episodes', type=int, default=None, help='Number of episodes for evaluation (uses num_episodes if None)')
+    parser.add_argument('--eval_num_episodes', type=int, default=32, help='Number of episodes for evaluation (uses num_episodes if None)')
 
     # Model Hyperparameters
     parser.add_argument('--state_dim', type=int, default=7, help='Dimension of the state vector')
@@ -727,7 +747,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Optimizer weight decay')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--save_interval', type=int, default=10, help='Save checkpoint every N epochs')
     parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
@@ -750,6 +770,9 @@ if __name__ == "__main__":
     parser.add_argument('--min_delta', type=float, default=0.0001, help='Minimum change in validation metric to qualify as improvement')
     parser.add_argument('--restore_best_weights', action='store_true', help='Restore model to best weights when early stopping occurs')
 
+    # Add this to your argument parser
+    parser.add_argument('--pin_memory', action='store_true', help='Use pinned memory for faster data transfer to GPU')
+    parser.set_defaults(pin_memory=True)  # Enable by default
 
     args = parser.parse_args()
 

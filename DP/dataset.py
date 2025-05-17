@@ -3,7 +3,8 @@
 import os
 import json
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
 from typing import List, Dict, Tuple, Any, Optional, Callable # Added Callable
 import logging
 from PIL import Image # Import Pillow library
@@ -23,7 +24,8 @@ class RobotEpisodeDataset(Dataset):
                  base_dir: str,
                  num_episodes: int,
                  episode_prefix: str = 'episode',
-                 transform: Optional[Callable] = None # Accept an optional transform
+                 transform: Optional[Callable] = None, # Accept an optional transform
+                 flat_structure: bool = False # Flag to indicate if the dataset has a flat structure
                 ):
         """
         Initializes the dataset.
@@ -34,27 +36,48 @@ class RobotEpisodeDataset(Dataset):
             episode_prefix (str, optional): Prefix for episode directory names. Defaults to 'episode'.
             transform (callable, optional): Optional transform to be applied
                                              on a sample image. Defaults to None.
+            flat_structure (bool, optional): If True, assumes episodes are directly in base_dir.
+                                            If False (default), assumes collection/episode nested structure.
         """
         super().__init__()
         self.base_dir = base_dir
         self.num_episodes = num_episodes
         self.episode_prefix = episode_prefix
         self.transform = transform # Store the transform
+        self.flat_structure = flat_structure # Store the structure type
 
         self.data_points: List[Dict[str, Any]] = []
         self._load_data()
 
     def _load_data(self):
         """
-        Scans for collection folders, then episode subfolders, parses states.json files,
-        and aggregates all timesteps into the self.data_points list.
+        Scans for episodes, parses states.json files, and aggregates all timesteps into the self.data_points list.
+        Handles both nested (collection/episode) and flat directory structures.
         Stores image paths for later loading.
         """
-        logging.info(f"Scanning data from base directory: {self.base_dir} using custom collection/episode structure.")
+        structure_type = "flat" if self.flat_structure else "nested collection/episode"
+        logging.info(f"Scanning data from base directory: {self.base_dir} using {structure_type} structure.")
         total_timesteps = 0
         skipped_timesteps = 0
         loaded_episodes_count = 0
 
+        if self.flat_structure:
+            # Flat structure: episodes are directly in the base directory
+            self._load_flat_structure(loaded_episodes_count, total_timesteps, skipped_timesteps)
+        else:
+            # Nested structure: collection folders contain episode folders
+            self._load_nested_structure(loaded_episodes_count, total_timesteps, skipped_timesteps)
+
+        logging.info(f"Finished scanning data. Processed {loaded_episodes_count} episode structures. Found {len(self.data_points)} valid timestep entries.")
+        if skipped_timesteps > 0:
+            logging.warning(f"Skipped {skipped_timesteps} timesteps due to missing/invalid data or files.")
+        if not self.data_points:
+             logging.warning("No data points were loaded. Check base directory and episode structure.")
+
+    def _load_nested_structure(self, loaded_episodes_count, total_timesteps, skipped_timesteps):
+        """
+        Loads data from a nested directory structure (collection/episode).
+        """
         try:
             collection_dirs_all = sorted([
                 d for d in os.listdir(self.base_dir)
@@ -72,89 +95,136 @@ class RobotEpisodeDataset(Dataset):
 
         for collection_name in collection_dirs_to_process:
             collection_path = os.path.join(self.base_dir, collection_name)
-            
+
             try:
                 potential_episode_dirs = [
                     d for d in os.listdir(collection_path)
-                    if os.path.isdir(os.path.join(collection_path, d)) and d.startswith('episode_')
+                    if os.path.isdir(os.path.join(collection_path, d)) and d.startswith(self.episode_prefix)
                 ]
             except Exception as e:
                 logging.warning(f"Could not list contents of {collection_path}: {e}, skipping collection.")
                 continue
 
             if not potential_episode_dirs:
-                logging.warning(f"No directory starting with 'episode_' found in {collection_path}, skipping collection.")
+                logging.warning(f"No directory starting with '{self.episode_prefix}' found in {collection_path}, skipping collection.")
                 continue
-            
+
             if len(potential_episode_dirs) > 1:
-                logging.warning(f"Multiple 'episode_' directories found in {collection_path}. Using the first one: {potential_episode_dirs[0]}.")
-            
+                logging.warning(f"Multiple '{self.episode_prefix}' directories found in {collection_path}. Using the first one: {potential_episode_dirs[0]}.")
+
             episode_name = potential_episode_dirs[0] # Use the first one found
             episode_dir = os.path.join(collection_path, episode_name) # This is the actual directory with states.json
-            state_file_path = os.path.join(episode_dir, 'states.json') # Changed from 'state.json'
 
-            if not os.path.isfile(state_file_path):
-                logging.warning(f"states.json not found in {episode_dir}, skipping this episode structure.")
-                continue
-            
-            loaded_episodes_count +=1 # Count this as one processed "episode unit"
+            # Process the episode directory
+            episode_result = self._process_episode_dir(episode_dir, loaded_episodes_count)
+            if episode_result:
+                loaded_episodes_count += 1
+                total_timesteps += episode_result['timesteps']
+                skipped_timesteps += episode_result['skipped']
 
-            try:
-                with open(state_file_path, 'r') as f:
-                    episode_data = json.load(f)
+    def _load_flat_structure(self, loaded_episodes_count, total_timesteps, skipped_timesteps):
+        """
+        Loads data from a flat directory structure (episodes directly in base_dir).
+        """
+        try:
+            episode_dirs_all = sorted([
+                d for d in os.listdir(self.base_dir)
+                if os.path.isdir(os.path.join(self.base_dir, d)) and d.startswith(self.episode_prefix)
+            ])
+        except FileNotFoundError:
+            logging.error(f"Base directory not found: {self.base_dir}")
+            return
+        except Exception as e:
+            logging.error(f"Error listing base directory {self.base_dir}: {e}")
+            return
 
-                if not isinstance(episode_data, list):
-                    logging.warning(f"states.json in {episode_dir} is not a list, skipping episode data.")
+        # Limit the number of episode directories to process
+        episode_dirs_to_process = episode_dirs_all[:self.num_episodes if self.num_episodes > 0 else len(episode_dirs_all)]
+
+        for episode_name in episode_dirs_to_process:
+            episode_dir = os.path.join(self.base_dir, episode_name)
+
+            # Process the episode directory
+            episode_result = self._process_episode_dir(episode_dir, loaded_episodes_count)
+            if episode_result:
+                loaded_episodes_count += 1
+                total_timesteps += episode_result['timesteps']
+                skipped_timesteps += episode_result['skipped']
+
+    def _process_episode_dir(self, episode_dir, episode_index):
+        """
+        Processes a single episode directory, extracting state and image data.
+
+        Args:
+            episode_dir (str): Path to the episode directory
+            episode_index (int): Current episode count for indexing
+
+        Returns:
+            dict: Contains 'timesteps' and 'skipped' counts, or None if processing failed
+        """
+        state_file_path = os.path.join(episode_dir, 'states.json')
+
+        if not os.path.isfile(state_file_path):
+            logging.warning(f"states.json not found in {episode_dir}, skipping this episode.")
+            return None
+
+        episode_timestep_count = 0
+        skipped_timesteps = 0
+
+        try:
+            with open(state_file_path, 'r') as f:
+                episode_data = json.load(f)
+
+            if not isinstance(episode_data, list):
+                logging.warning(f"states.json in {episode_dir} is not a list, skipping episode data.")
+                return None
+
+            for timestep_data in episode_data:
+                if not all(k in timestep_data for k in ["angles", "gripper_value", "image"]):
+                    logging.warning(f"Missing keys in timestep data in {state_file_path}, skipping timestep.")
+                    skipped_timesteps += 1
+                    continue
+                if not isinstance(timestep_data["angles"], list) or len(timestep_data["angles"]) != 6:
+                     logging.warning(f"Invalid 'angles' format in {state_file_path}, skipping timestep.")
+                     skipped_timesteps += 1
+                     continue
+                if not isinstance(timestep_data["gripper_value"], list) or len(timestep_data["gripper_value"]) != 1:
+                     logging.warning(f"Invalid 'gripper_value' format in {state_file_path}, skipping timestep.")
+                     skipped_timesteps += 1
+                     continue
+                if not isinstance(timestep_data["image"], str):
+                     logging.warning(f"Invalid 'image' format (not a string) in {state_file_path}, skipping timestep.")
+                     skipped_timesteps += 1
+                     continue
+
+                relative_image_path = timestep_data["image"]
+                # Image path is relative to episode_dir (e.g., "frame_dir/image_0000.png")
+                full_image_path = os.path.join(episode_dir, relative_image_path)
+
+                if not os.path.isfile(full_image_path):
+                    logging.warning(f"Image file not found during scan: {full_image_path}, skipping timestep.")
+                    skipped_timesteps += 1
                     continue
 
-                episode_timestep_count = 0
-                for timestep_data in episode_data:
-                    if not all(k in timestep_data for k in ["angles", "gripper_value", "image"]):
-                        logging.warning(f"Missing keys in timestep data in {state_file_path}, skipping timestep.")
-                        skipped_timesteps += 1
-                        continue
-                    if not isinstance(timestep_data["angles"], list) or len(timestep_data["angles"]) != 6:
-                         logging.warning(f"Invalid 'angles' format in {state_file_path}, skipping timestep.")
-                         skipped_timesteps += 1
-                         continue
-                    if not isinstance(timestep_data["gripper_value"], list) or len(timestep_data["gripper_value"]) != 1:
-                         logging.warning(f"Invalid 'gripper_value' format in {state_file_path}, skipping timestep.")
-                         skipped_timesteps += 1
-                         continue
-                    if not isinstance(timestep_data["image"], str):
-                         logging.warning(f"Invalid 'image' format (not a string) in {state_file_path}, skipping timestep.")
-                         skipped_timesteps += 1
-                         continue
+                self.data_points.append({
+                    'angles': timestep_data['angles'],
+                    'gripper_value': timestep_data['gripper_value'][0],
+                    'image_path': full_image_path,
+                    'episode_index': episode_index + 1, # Use the count of processed episodes
+                })
+                episode_timestep_count += 1
 
-                    relative_image_path = timestep_data["image"]
-                    # Image path is relative to episode_dir (e.g., "frame_dir/image_0000.png")
-                    full_image_path = os.path.join(episode_dir, relative_image_path) 
+            return {
+                'timesteps': episode_timestep_count,
+                'skipped': skipped_timesteps
+            }
 
-                    if not os.path.isfile(full_image_path):
-                        logging.warning(f"Image file not found during scan: {full_image_path}, skipping timestep.")
-                        skipped_timesteps += 1
-                        continue
-
-                    self.data_points.append({
-                        'angles': timestep_data['angles'],
-                        'gripper_value': timestep_data['gripper_value'][0],
-                        'image_path': full_image_path,
-                        'episode_index': loaded_episodes_count, # Use the count of processed collection/episode structures
-                    })
-                    episode_timestep_count += 1
-                
-                total_timesteps += episode_timestep_count
-
-            except json.JSONDecodeError:
-                logging.error(f"Error decoding JSON from {state_file_path}, skipping episode data.")
-            except Exception as e:
-                logging.error(f"An unexpected error occurred processing {episode_dir}: {e}, skipping episode data.")
-
-        logging.info(f"Finished scanning data. Processed {loaded_episodes_count} episode structures. Found {total_timesteps} valid timestep entries.")
-        if skipped_timesteps > 0:
-            logging.warning(f"Skipped {skipped_timesteps} timesteps due to missing/invalid data or files.")
-        if not self.data_points:
-             logging.warning("No data points were loaded. Check base directory and episode structure.")
+        except json.JSONDecodeError:
+            logging.error(f"Error decoding JSON from {state_file_path}, skipping episode data.")
+            return None
+        except Exception as e:
+            logging.error(f"An unexpected error occurred processing {episode_dir}: {e}, skipping episode data.")
+            return None
 
 
     def __len__(self) -> int:
@@ -291,8 +361,23 @@ if __name__ == "__main__":
             # Optional: Test with DataLoader
             print("\n--- DataLoader Test ---")
             try:
-                # Use the same collate_fn for testing consistency
-                test_loader = DataLoader(robot_dataset, batch_size=4, shuffle=False, num_workers=0, collate_fn=custom_collate_fn) # num_workers=0 for easier debugging
+                # Define a simple collate function for testing
+                def test_collate_fn(batch):
+                    """Simple collate function for testing."""
+                    states = []
+                    images = []
+                    for item in batch:
+                        if item is None or not isinstance(item, tuple) or len(item) != 2:
+                            continue
+                        state, image = item
+                        states.append(state)
+                        images.append(image)
+                    if not states:
+                        return None, None
+                    return torch.stack(states), torch.stack(images)
+
+                # Use our test collate function
+                test_loader = DataLoader(robot_dataset, batch_size=4, shuffle=False, num_workers=0, collate_fn=test_collate_fn) # num_workers=0 for easier debugging
                 batch_count = 0
                 for batch in test_loader:
                     if batch is None or batch == (None, None):
