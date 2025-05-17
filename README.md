@@ -22,6 +22,7 @@ The model architecture consists of:
 │   ├── train.py            # Training script
 │   ├── model.py            # Model architecture
 │   ├── dataset.py          # Dataset loader
+│   ├── augmentation.py     # State augmentation for robustness
 │   ├── inference.py        # Inference script
 │   ├── run.sh              # Training script wrapper
 │   └── checkpoints/        # Model checkpoints (created during training)
@@ -33,16 +34,91 @@ The model architecture consists of:
 ### Requirements
 
 - Python 3.8+
-- PyTorch 1.10+
+- PyTorch 2.0+ (with appropriate CUDA or MPS support)
 - torchvision
+- matplotlib
+- numpy
 - tqdm
 - Pillow
 
-Install the required packages:
+## Setup Instructions
+
+### Mac Setup (Apple Silicon or Intel)
+
+1. **Create a virtual environment**:
+   ```bash
+   python -m venv dp_venv
+   source dp_venv/bin/activate
+   ```
+
+2. **Install PyTorch with MPS support** (for Apple Silicon):
+   ```bash
+   pip install --upgrade pip
+   pip install torch torchvision
+   ```
+   This will install PyTorch with MPS (Metal Performance Shaders) acceleration for Apple Silicon Macs.
+
+3. **Install other dependencies**:
+   ```bash
+   pip install matplotlib numpy tqdm pillow
+   ```
+
+4. **Verify MPS availability** (for Apple Silicon):
+   ```python
+   import torch
+   print(f"PyTorch version: {torch.__version__}")
+   print(f"MPS available: {torch.backends.mps.is_available()}")
+   print(f"MPS built: {torch.backends.mps.is_built()}")
+   ```
+
+5. **Troubleshooting MPS issues**:
+   - If you encounter MPS-related errors, try setting these environment variables:
+     ```bash
+     export PYTORCH_ENABLE_MPS_FALLBACK=1
+     ```
+   - For specific operations not supported by MPS, the model will automatically fall back to CPU
+
+### Windows Setup
+
+1. **Create a virtual environment**:
+   ```bash
+   python -m venv dp_venv
+   dp_venv\Scripts\activate
+   ```
+
+2. **Install PyTorch with CUDA support** (for NVIDIA GPUs):
+   ```bash
+   pip install --upgrade pip
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+   ```
+   Replace `cu118` with your desired CUDA version (e.g., `cu117`, `cu121`).
+
+3. **Install other dependencies**:
+   ```bash
+   pip install matplotlib numpy tqdm pillow
+   ```
+
+4. **Verify CUDA availability**:
+   ```python
+   import torch
+   print(f"PyTorch version: {torch.__version__}")
+   print(f"CUDA available: {torch.cuda.is_available()}")
+   print(f"CUDA version: {torch.version.cuda}")
+   print(f"GPU count: {torch.cuda.device_count()}")
+   print(f"Current device: {torch.cuda.current_device()}")
+   print(f"Device name: {torch.cuda.get_device_name(0)}")
+   ```
+
+### CPU-only Setup (Any Platform)
+
+If you don't have a compatible GPU:
 
 ```bash
-pip install torch torchvision tqdm pillow
+pip install torch torchvision
+pip install matplotlib numpy tqdm pillow
 ```
+
+Note that training will be significantly slower without GPU acceleration.
 
 ## Dataset Structure
 
@@ -93,6 +169,39 @@ Key parameters for training:
 - `--state_dim`: Dimension of the state vector (default: 7 - 6 joint angles + 1 gripper value)
 - `--diffusion_timesteps`: Number of diffusion timesteps (default: 1000)
 - `--learning_rate`: Learning rate (default: 0.0001)
+- `--weight_decay`: Weight decay for optimizer (default: 1e-4)
+
+### State Augmentation
+
+The model supports state augmentation to improve robustness and generalization:
+
+```bash
+python train.py --data_dir ../mycobot_episodes/ --state_aug_enabled --state_aug_noise_type gaussian --state_aug_noise_scale 0.05
+```
+
+State augmentation parameters:
+
+- `--state_aug_enabled`: Enable state augmentation during training
+- `--state_aug_noise_type`: Type of noise to apply (`gaussian`, `uniform`, or `scaled`)
+- `--state_aug_noise_scale`: Scale of noise to apply (e.g., 0.01 to 0.1)
+- `--state_aug_noise_schedule`: How noise scale changes over training (`constant`, `linear_decay`, or `cosine_decay`)
+- `--state_aug_random_drop_prob`: Probability of randomly zeroing out a joint value (0.0 to disable)
+- `--state_aug_clip_min` and `--state_aug_clip_max`: Min/max values to clip augmented state
+
+### Early Stopping
+
+To prevent overfitting, you can enable early stopping:
+
+```bash
+python train.py --data_dir ../mycobot_episodes/ --early_stopping --patience 15 --restore_best_weights
+```
+
+Early stopping parameters:
+
+- `--early_stopping`: Enable early stopping based on validation performance
+- `--patience`: Number of evaluations to wait for improvement before stopping
+- `--min_delta`: Minimum change in validation metric to qualify as improvement
+- `--restore_best_weights`: Restore model to best weights when early stopping occurs
 
 For a complete list of parameters, see the argument parser in `train.py`.
 

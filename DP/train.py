@@ -727,7 +727,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
+    parser.add_argument('--weight_decay', type=float, default=1e-5, help='Optimizer weight decay')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--save_interval', type=int, default=10, help='Save checkpoint every N epochs')
     parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
@@ -738,7 +738,7 @@ if __name__ == "__main__":
     # State Augmentation Parameters
     parser.add_argument('--state_aug_enabled', action='store_true', help='Enable state augmentation during training')
     parser.add_argument('--state_aug_noise_type', type=str, default='gaussian', choices=['gaussian', 'uniform', 'scaled'], help='Type of noise to apply for state augmentation')
-    parser.add_argument('--state_aug_noise_scale', type=float, default=0.01, help='Scale of noise to apply for state augmentation')
+    parser.add_argument('--state_aug_noise_scale', type=float, default=0.1, help='Scale of noise to apply for state augmentation')
     parser.add_argument('--state_aug_noise_schedule', type=str, default='constant', choices=['constant', 'linear_decay', 'cosine_decay'], help='How noise scale changes over training')
     parser.add_argument('--state_aug_random_drop_prob', type=float, default=0.0, help='Probability of randomly zeroing out a joint value (0.0 to disable)')
     parser.add_argument('--state_aug_clip_min', type=float, default=None, help='Minimum value to clip augmented state (None for no clipping)')
@@ -746,7 +746,7 @@ if __name__ == "__main__":
 
     # Early Stopping Parameters
     parser.add_argument('--early_stopping', action='store_true', help='Enable early stopping based on validation performance')
-    parser.add_argument('--patience', type=int, default=10, help='Number of evaluations to wait for improvement before stopping')
+    parser.add_argument('--patience', type=int, default=15, help='Number of evaluations to wait for improvement before stopping')
     parser.add_argument('--min_delta', type=float, default=0.0001, help='Minimum change in validation metric to qualify as improvement')
     parser.add_argument('--restore_best_weights', action='store_true', help='Restore model to best weights when early stopping occurs')
 
