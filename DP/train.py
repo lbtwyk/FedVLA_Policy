@@ -16,6 +16,7 @@ from typing import Optional, List, Tuple, Union, Dict
 # Import custom modules
 from dataset import RobotEpisodeDataset # Assuming dataset.py is in the same directory
 from model import DiffusionPolicyModel  # Assuming model.py is in the same directory
+from augmentation import StateAugmenter  # Import the state augmentation module
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -376,6 +377,31 @@ def train(args):
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"Trainable parameters: {num_params:,}")
 
+    # --- State Augmentation Setup ---
+    clip_bounds = None
+    if args.state_aug_clip_min is not None and args.state_aug_clip_max is not None:
+        clip_bounds = (args.state_aug_clip_min, args.state_aug_clip_max)
+
+    state_augmenter = StateAugmenter(
+        enabled=args.state_aug_enabled,
+        noise_type=args.state_aug_noise_type,
+        noise_scale=args.state_aug_noise_scale,
+        noise_schedule=args.state_aug_noise_schedule,
+        clip_bounds=clip_bounds,
+        random_drop_prob=args.state_aug_random_drop_prob
+    )
+
+    if args.state_aug_enabled:
+        logging.info(f"State augmentation enabled: {args.state_aug_noise_type} noise with scale {args.state_aug_noise_scale}")
+        if args.state_aug_noise_schedule != 'constant':
+            logging.info(f"Using {args.state_aug_noise_schedule} noise schedule")
+        if args.state_aug_random_drop_prob > 0:
+            logging.info(f"Random state dropout probability: {args.state_aug_random_drop_prob}")
+        if clip_bounds:
+            logging.info(f"State clipping bounds: {clip_bounds}")
+    else:
+        logging.info("State augmentation disabled")
+
     # --- Optimizer ---
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     logging.info(f"Optimizer: AdamW (lr={args.learning_rate}, weight_decay={args.weight_decay})")
@@ -393,10 +419,24 @@ def train(args):
     global_step = 0
     best_eval_metric = float('inf') # Now tracking MSE
 
+    # --- Early Stopping Setup ---
+    early_stopping_counter = 0
+    early_stopping_best_metric = float('inf')
+    early_stopping_best_model_state = None
+
+    if args.early_stopping:
+        logging.info(f"Early stopping enabled with patience={args.patience}, min_delta={args.min_delta}")
+        if args.restore_best_weights:
+            logging.info("Will restore model to best weights when early stopping occurs")
+        if args.eval_interval <= 0:
+            logging.warning("Early stopping requires evaluation. Setting eval_interval to 5.")
+            args.eval_interval = 5
+
     if hasattr(args, 'resume_from') and args.resume_from:
         if os.path.isfile(args.resume_from):
             logging.info(f"Loading checkpoint from {args.resume_from}")
             try:
+                # Load checkpoint without weights_only parameter for compatibility with older PyTorch versions
                 checkpoint = torch.load(args.resume_from, map_location=device)
                 model.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -406,6 +446,36 @@ def train(args):
                     logging.info(f"Resuming from epoch {start_epoch} with best eval metric: {best_eval_metric:.4f}")
                 else:
                     logging.info(f"Resuming from epoch {start_epoch}")
+
+                # Load state augmentation parameters if they exist in the checkpoint
+                if args.state_aug_enabled and 'state_aug_params' in checkpoint:
+                    aug_params = checkpoint['state_aug_params']
+                    logging.info("Loading state augmentation parameters from checkpoint")
+
+                    # Update state augmenter with saved parameters
+                    state_augmenter.enabled = aug_params.get('enabled', state_augmenter.enabled)
+                    state_augmenter.noise_type = aug_params.get('noise_type', state_augmenter.noise_type)
+                    state_augmenter.noise_scale = aug_params.get('noise_scale', state_augmenter.noise_scale)
+                    state_augmenter.base_noise_scale = aug_params.get('base_noise_scale', state_augmenter.base_noise_scale)
+                    state_augmenter.noise_schedule = aug_params.get('noise_schedule', state_augmenter.noise_schedule)
+                    state_augmenter.clip_bounds = aug_params.get('clip_bounds', state_augmenter.clip_bounds)
+                    state_augmenter.random_drop_prob = aug_params.get('random_drop_prob', state_augmenter.random_drop_prob)
+
+                    logging.info(f"Restored state augmentation: {state_augmenter.noise_type} noise with scale {state_augmenter.noise_scale}")
+
+                # Load early stopping state if it exists in the checkpoint
+                if args.early_stopping and 'early_stopping' in checkpoint:
+                    es_params = checkpoint['early_stopping']
+                    logging.info("Loading early stopping state from checkpoint")
+
+                    early_stopping_counter = es_params.get('counter', early_stopping_counter)
+                    early_stopping_best_metric = es_params.get('best_metric', early_stopping_best_metric)
+
+                    if 'best_model_state' in es_params and args.restore_best_weights:
+                        early_stopping_best_model_state = es_params['best_model_state']
+                        logging.info("Restored early stopping best model state")
+
+                    logging.info(f"Restored early stopping state: counter={early_stopping_counter}, best_metric={early_stopping_best_metric:.4f}")
 
                 # Adjust learning rate if needed
                 for param_group in optimizer.param_groups:
@@ -426,6 +496,12 @@ def train(args):
         batches_processed_this_epoch = 0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{args.num_epochs}", leave=True)
 
+        # Update state augmentation schedule if enabled
+        if args.state_aug_enabled and args.state_aug_noise_schedule != 'constant':
+            state_augmenter.set_training_progress(epoch, args.num_epochs)
+            if epoch % 10 == 0:  # Log every 10 epochs
+                logging.info(f"State augmentation noise scale updated to {state_augmenter.noise_scale:.5f}")
+
         for batch_idx, batch in enumerate(progress_bar):
             optimizer.zero_grad()
 
@@ -439,6 +515,11 @@ def train(args):
                 image_batch = image_batch.to(device)
             except Exception as e: logging.error(f"Error moving training batch {batch_idx} to device {device}: {e}"); continue
             if state_batch.shape[0] == 0 or image_batch.shape[0] == 0: continue
+
+            # --- Apply State Augmentation (if enabled) ---
+            if args.state_aug_enabled:
+                # Apply augmentation to the clean state before adding diffusion noise
+                state_batch = state_augmenter(state_batch)
 
             # --- Training Step (predict noise) ---
             current_batch_size = state_batch.shape[0]
@@ -486,15 +567,76 @@ def train(args):
                 best_eval_metric = avg_eval_mse
                 best_checkpoint_path = os.path.join(args.output_dir, "model_best.pth")
                 try:
-                    torch.save({
-                        'epoch': epoch + 1, 'model_state_dict': model.state_dict(),
+                    # Save additional state augmentation info if enabled
+                    checkpoint_data = {
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'eval_metric': avg_eval_mse, # Store eval MSE
                         'args': vars(args)
-                    }, best_checkpoint_path)
+                    }
+
+                    if args.state_aug_enabled:
+                        checkpoint_data['state_aug_params'] = {
+                            'enabled': state_augmenter.enabled,
+                            'noise_type': state_augmenter.noise_type,
+                            'noise_scale': state_augmenter.noise_scale,
+                            'base_noise_scale': state_augmenter.base_noise_scale,
+                            'noise_schedule': state_augmenter.noise_schedule,
+                            'clip_bounds': state_augmenter.clip_bounds,
+                            'random_drop_prob': state_augmenter.random_drop_prob
+                        }
+
+                    # Save early stopping state if enabled
+                    if args.early_stopping:
+                        es_state = {
+                            'counter': early_stopping_counter,
+                            'best_metric': early_stopping_best_metric
+                        }
+
+                        # Only save best model state if restore_best_weights is enabled
+                        if args.restore_best_weights and early_stopping_best_model_state is not None:
+                            es_state['best_model_state'] = early_stopping_best_model_state
+
+                        checkpoint_data['early_stopping'] = es_state
+
+                    # Save checkpoint without weights_only parameter for compatibility with older PyTorch versions
+                    torch.save(checkpoint_data, best_checkpoint_path)
                     logging.info(f"Saved new best model checkpoint to {best_checkpoint_path} (Eval State MSE: {best_eval_metric:.4f})")
                 except Exception as e:
                      logging.error(f"Failed to save best checkpoint at epoch {epoch+1}: {e}")
+
+            # --- Early Stopping Logic ---
+            if args.early_stopping:
+                # Check if there's an improvement
+                # Improvement happens when the metric decreases by at least min_delta
+                if early_stopping_best_metric - avg_eval_mse > args.min_delta:
+                    early_stopping_best_metric = avg_eval_mse
+                    early_stopping_counter = 0
+
+                    # Store the best model weights if restore_best_weights is enabled
+                    if args.restore_best_weights:
+                        early_stopping_best_model_state = {
+                            key: value.cpu().clone() for key, value in model.state_dict().items()
+                        }
+
+                    logging.info(f"Early stopping: Improvement detected, counter reset (best metric: {early_stopping_best_metric:.4f})")
+                else:
+                    early_stopping_counter += 1
+                    logging.info(f"Early stopping: No improvement, counter increased to {early_stopping_counter}/{args.patience}")
+
+                    # Check if we should stop training
+                    if early_stopping_counter >= args.patience:
+                        logging.info(f"Early stopping triggered after {args.patience} evaluations without improvement")
+
+                        # Restore best weights if enabled
+                        if args.restore_best_weights and early_stopping_best_model_state is not None:
+                            logging.info("Restoring model to best weights")
+                            model.load_state_dict(early_stopping_best_model_state)
+
+                        # Break out of the training loop
+                        break
+
             logging.info(f"--- Finished evaluation sampling for Epoch {epoch+1} ---")
 
 
@@ -502,18 +644,53 @@ def train(args):
         if (epoch + 1) % args.save_interval == 0 or (epoch + 1) == args.num_epochs:
             checkpoint_path = os.path.join(args.output_dir, f"model_epoch_{epoch+1}.pth")
             try:
-                torch.save({
-                    'epoch': epoch + 1, 'model_state_dict': model.state_dict(),
+                # Save additional state augmentation info if enabled
+                checkpoint_data = {
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'train_loss': avg_epoch_loss, # Store training loss
                     'args': vars(args)
-                }, checkpoint_path)
+                }
+
+                if args.state_aug_enabled:
+                    checkpoint_data['state_aug_params'] = {
+                        'enabled': state_augmenter.enabled,
+                        'noise_type': state_augmenter.noise_type,
+                        'noise_scale': state_augmenter.noise_scale,
+                        'base_noise_scale': state_augmenter.base_noise_scale,
+                        'noise_schedule': state_augmenter.noise_schedule,
+                        'clip_bounds': state_augmenter.clip_bounds,
+                        'random_drop_prob': state_augmenter.random_drop_prob
+                    }
+
+                # Save early stopping state if enabled
+                if args.early_stopping:
+                    es_state = {
+                        'counter': early_stopping_counter,
+                        'best_metric': early_stopping_best_metric
+                    }
+
+                    # Only save best model state if restore_best_weights is enabled
+                    if args.restore_best_weights and early_stopping_best_model_state is not None:
+                        es_state['best_model_state'] = early_stopping_best_model_state
+
+                    checkpoint_data['early_stopping'] = es_state
+
+                # Save checkpoint without weights_only parameter for compatibility with older PyTorch versions
+                torch.save(checkpoint_data, checkpoint_path)
                 logging.info(f"Saved checkpoint to {checkpoint_path}")
             except Exception as e:
                  logging.error(f"Failed to save checkpoint at epoch {epoch+1}: {e}")
 
 
-    logging.info("Training finished.")
+    # Final training message
+    if args.early_stopping and early_stopping_counter >= args.patience:
+        logging.info(f"Training finished early due to early stopping after {epoch+1} epochs.")
+        logging.info(f"Best validation metric: {early_stopping_best_metric:.4f}")
+    else:
+        logging.info(f"Training finished after completing all {args.num_epochs} epochs.")
+        logging.info(f"Best validation metric: {best_eval_metric:.4f}")
 
 
 # --- Main Execution Block ---
@@ -521,10 +698,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Diffusion Policy Model")
 
     # Paths and Directories
-    parser.add_argument('--data_dir', type=str, default='../stack_orange/', help='Base directory for training dataset')
+    parser.add_argument('--data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for training dataset')
     parser.add_argument('--eval_data_dir', type=str, default=None, help='Base directory for evaluation dataset (uses data_dir if None)')
     parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints')
-    parser.add_argument('--num_episodes', type=int, default=95, help='Number of episodes to load for training')
+    parser.add_argument('--num_episodes', type=int, default=97, help='Number of episodes to load for training')
     parser.add_argument('--eval_num_episodes', type=int, default=None, help='Number of episodes for evaluation (uses num_episodes if None)')
 
     # Model Hyperparameters
@@ -546,17 +723,32 @@ if __name__ == "__main__":
     parser.add_argument('--beta_end', type=float, default=0.02, help='Ending value for linear beta schedule')
 
     # Training Hyperparameters
-    parser.add_argument('--num_epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--num_epochs', type=int, default=500, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-6, help='Optimizer weight decay')
-    parser.add_argument('--num_workers', type=int, default=2, help='Number of workers for DataLoader')
-    parser.add_argument('--save_interval', type=int, default=50, help='Save checkpoint every N epochs')
-    parser.add_argument('--eval_interval', type=int, default=10, help='Evaluate model every N epochs (set to 0 to disable)')
+    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
+    parser.add_argument('--save_interval', type=int, default=10, help='Save checkpoint every N epochs')
+    parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
     parser.add_argument('--num_eval_samples', type=int, default=64, help='Number of samples to generate during evaluation') # Added num_eval_samples
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use if available')
     parser.add_argument('--resume_from', type=str, default=None, help='Path to checkpoint file to resume training from')
+
+    # State Augmentation Parameters
+    parser.add_argument('--state_aug_enabled', action='store_true', help='Enable state augmentation during training')
+    parser.add_argument('--state_aug_noise_type', type=str, default='gaussian', choices=['gaussian', 'uniform', 'scaled'], help='Type of noise to apply for state augmentation')
+    parser.add_argument('--state_aug_noise_scale', type=float, default=0.01, help='Scale of noise to apply for state augmentation')
+    parser.add_argument('--state_aug_noise_schedule', type=str, default='constant', choices=['constant', 'linear_decay', 'cosine_decay'], help='How noise scale changes over training')
+    parser.add_argument('--state_aug_random_drop_prob', type=float, default=0.0, help='Probability of randomly zeroing out a joint value (0.0 to disable)')
+    parser.add_argument('--state_aug_clip_min', type=float, default=None, help='Minimum value to clip augmented state (None for no clipping)')
+    parser.add_argument('--state_aug_clip_max', type=float, default=None, help='Maximum value to clip augmented state (None for no clipping)')
+
+    # Early Stopping Parameters
+    parser.add_argument('--early_stopping', action='store_true', help='Enable early stopping based on validation performance')
+    parser.add_argument('--patience', type=int, default=10, help='Number of evaluations to wait for improvement before stopping')
+    parser.add_argument('--min_delta', type=float, default=0.0001, help='Minimum change in validation metric to qualify as improvement')
+    parser.add_argument('--restore_best_weights', action='store_true', help='Restore model to best weights when early stopping occurs')
 
 
     args = parser.parse_args()
