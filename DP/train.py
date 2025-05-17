@@ -748,10 +748,10 @@ if __name__ == "__main__":
     parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
-    parser.add_argument('--save_interval', type=int, default=10, help='Save checkpoint every N epochs')
+    parser.add_argument('--num_workers', type=int, default=2, help='Number of workers for DataLoader')
+    parser.add_argument('--save_interval', type=int, default=50, help='Save checkpoint every N epochs')
     parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
-    parser.add_argument('--num_eval_samples', type=int, default=64, help='Number of samples to generate during evaluation') # Added num_eval_samples
+    parser.add_argument('--num_eval_samples', type=int, default=32, help='Number of samples to generate during evaluation') # Added num_eval_samples
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use if available')
     parser.add_argument('--resume_from', type=str, default=None, help='Path to checkpoint file to resume training from')
 
