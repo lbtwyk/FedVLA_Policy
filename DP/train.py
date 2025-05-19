@@ -21,6 +21,24 @@ from augmentation import StateAugmenter  # Import the state augmentation module
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# --- Helper Functions ---
+
+def clean_mps_cache():
+    """
+    Cleans the MPS cache to prevent memory explosion on Apple Silicon hardware.
+    This function should be called periodically during long training runs.
+    """
+    # Check if MPS is available
+    if torch.backends.mps.is_available():
+        # Force garbage collection
+        import gc
+        gc.collect()
+
+        # Empty MPS cache
+        torch.mps.empty_cache()
+        return True
+    return False
+
 # --- Diffusion Schedule Helpers ---
 
 def linear_beta_schedule(timesteps: int, beta_start: float = 0.0001, beta_end: float = 0.02) -> torch.Tensor:
@@ -130,6 +148,11 @@ def p_sample_loop(model: nn.Module, shape: tuple, timesteps: int,
         # For MPS device, synchronize to ensure operations are complete
         if device.type == "mps":
             torch.mps.synchronize()
+
+            # Periodically clean MPS cache during long sampling processes
+            # Clean every 100 steps to avoid too frequent cleaning
+            if i % 100 == 0 and i > 0:
+                clean_mps_cache()
 
     # img now holds the predicted x_0
 
@@ -321,21 +344,94 @@ def train(args):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    # --- Training Dataset and DataLoader ---
+    # --- Dataset Loading and Splitting ---
     try:
         import inspect
+        from torch.utils.data import random_split
+
         sig = inspect.signature(RobotEpisodeDataset.__init__)
-        dataset_args = {
-            'base_dir': args.data_dir,
-            'num_episodes': args.num_episodes,
-            'flat_structure': False  # Training dataset uses nested structure
-        }
-        if 'transform' in sig.parameters: dataset_args['transform'] = image_transform
-        train_dataset = RobotEpisodeDataset(**dataset_args)
+
+        # Determine if we should use a separate validation dataset or split a single dataset
+        use_separate_val_dataset = args.eval_data_dir is not None and args.eval_data_dir != args.data_dir and args.eval_data_dir != ""
+
+        if use_separate_val_dataset:
+            # --- Load Training Dataset ---
+            train_dataset_args = {
+                'base_dir': args.data_dir,
+                'num_episodes': args.num_episodes,
+                'flat_structure': args.data_dir.endswith('mycobot_episodes')  # Auto-detect structure
+            }
+            if 'transform' in sig.parameters: train_dataset_args['transform'] = image_transform
+
+            logging.info(f"Loading training dataset from {args.data_dir} with {'flat' if train_dataset_args['flat_structure'] else 'nested'} structure")
+            train_dataset = RobotEpisodeDataset(**train_dataset_args)
+
+            if len(train_dataset) == 0:
+                logging.error("Training dataset is empty.");
+                return
+
+            # --- Load Separate Validation Dataset ---
+            if args.eval_interval > 0:
+                eval_dataset_args = {
+                    'base_dir': args.eval_data_dir,
+                    'num_episodes': args.eval_num_episodes if args.eval_num_episodes else args.num_episodes,
+                    'flat_structure': args.eval_data_dir.endswith('mycobot_episodes') or args.eval_data_dir.endswith('mycobot_episodes_val')
+                }
+                if 'transform' in sig.parameters: eval_dataset_args['transform'] = image_transform
+
+                logging.info(f"Loading evaluation dataset from {args.eval_data_dir} with {'flat' if eval_dataset_args['flat_structure'] else 'nested'} structure")
+                eval_dataset = RobotEpisodeDataset(**eval_dataset_args)
+
+                if eval_dataset is None or len(eval_dataset) == 0:
+                    logging.warning("Evaluation dataset is empty or failed to load. Skipping evaluation.")
+                    eval_dataset = None
+                    eval_dataloader = None
+            else:
+                logging.info("Evaluation interval is 0. Skipping evaluation setup.")
+                eval_dataset = None
+                eval_dataloader = None
+        else:
+            # --- Load Single Dataset and Split ---
+            # Determine if the dataset has a flat or nested structure
+            is_flat_structure = args.data_dir.endswith('mycobot_episodes')
+
+            logging.info(f"Using single dataset with train/val split (ratio: {args.val_split_ratio})")
+
+            full_dataset_args = {
+                'base_dir': args.data_dir,
+                'num_episodes': 0,  # Load all episodes
+                'flat_structure': is_flat_structure
+            }
+            if 'transform' in sig.parameters: full_dataset_args['transform'] = image_transform
+
+            logging.info(f"Loading full dataset from {args.data_dir} with {'flat' if is_flat_structure else 'nested'} structure for train/val split")
+            full_dataset = RobotEpisodeDataset(**full_dataset_args)
+
+            if len(full_dataset) == 0:
+                logging.error("Dataset is empty.")
+                return
+
+            # Calculate split sizes
+            total_size = len(full_dataset)
+            val_ratio = args.val_split_ratio  # Default is 0.2 (20% for validation)
+            val_size = int(val_ratio * total_size)
+            train_size = total_size - val_size
+
+            # Create random splits with fixed seed for reproducibility
+            generator = torch.Generator().manual_seed(args.random_seed)
+            train_dataset, eval_dataset = random_split(full_dataset, [train_size, val_size], generator=generator)
+
+            logging.info(f"Split dataset: {train_size} samples for training, {val_size} samples for validation")
+
+            if args.eval_interval <= 0:
+                logging.info("Evaluation interval is 0. Skipping evaluation setup.")
+                eval_dataset = None
+
     except Exception as e:
-        logging.exception(f"Error initializing training dataset from {args.data_dir}")
+        logging.exception(f"Error initializing dataset from {args.data_dir}")
         return
-    if len(train_dataset) == 0: logging.error("Training dataset is empty."); return
+
+    # --- Create Training DataLoader ---
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -344,47 +440,20 @@ def train(args):
         pin_memory=args.pin_memory if device.type in ['cuda', 'mps'] else False,
         collate_fn=custom_collate_fn
     )
-    logging.info(f"Training dataset loaded: {len(train_dataset)} samples.")
+    logging.info(f"Training dataloader created with {len(train_dataset)} samples.")
 
-    # --- Evaluation Dataset and DataLoader ---
+    # --- Create Evaluation DataLoader ---
     eval_dataloader = None
-    if args.eval_interval > 0: # Only load if eval_interval is set
-        eval_data_dir = args.eval_data_dir if args.eval_data_dir else args.data_dir
-        eval_num_episodes = args.eval_num_episodes if args.eval_num_episodes else args.num_episodes
-        if eval_data_dir == args.data_dir and eval_num_episodes > args.num_episodes:
-            eval_num_episodes = args.num_episodes
-
-        # Determine if validation dataset has flat structure
-        # If using the same directory as training, use the same structure
-        # If using the dedicated validation directory, use flat structure
-        use_flat_structure = eval_data_dir != args.data_dir
-
-        try:
-            eval_dataset_args = {
-                'base_dir': eval_data_dir,
-                'num_episodes': eval_num_episodes,
-                'flat_structure': use_flat_structure  # True for dedicated validation dataset
-            }
-            if 'transform' in sig.parameters: eval_dataset_args['transform'] = image_transform
-
-            logging.info(f"Loading evaluation dataset from {eval_data_dir} with {'flat' if use_flat_structure else 'nested'} structure")
-            eval_dataset = RobotEpisodeDataset(**eval_dataset_args)
-        except Exception as e:
-            logging.exception(f"Error initializing evaluation dataset from {eval_data_dir}. Disabling evaluation.")
-            eval_dataset = None
-
-        if eval_dataset and len(eval_dataset) > 0:
-            eval_dataloader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False,
-                                         num_workers=args.num_workers,
-                                         pin_memory=args.pin_memory if device.type in ['cuda', 'mps'] else False,
-                                         collate_fn=custom_collate_fn)
-            logging.info(f"Evaluation dataset loaded: {len(eval_dataset)} samples.")
-        else:
-            if eval_dataset is None: logging.warning("Evaluation dataset failed to load. Skipping evaluation.")
-            else: logging.warning("Evaluation dataset is empty. Skipping evaluation.")
-            eval_dataloader = None
-    else:
-        logging.info("Evaluation interval is 0. Skipping evaluation setup.")
+    if args.eval_interval > 0 and eval_dataset is not None and len(eval_dataset) > 0:
+        eval_dataloader = DataLoader(
+            eval_dataset,
+            batch_size=args.eval_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_memory if device.type in ['cuda', 'mps'] else False,
+            collate_fn=custom_collate_fn
+        )
+        logging.info(f"Evaluation dataloader created with {len(eval_dataset)} samples.")
 
 
     # --- Model Initialization ---
@@ -572,6 +641,10 @@ def train(args):
              logging.warning(f"Epoch {epoch+1}/{args.num_epochs} completed without processing any training batches.")
              avg_epoch_loss = float('inf')
 
+        # --- Clean MPS Cache after each epoch ---
+        if clean_mps_cache():
+            logging.info("MPS cache cleaned after epoch completion")
+
         # --- Evaluation Step (Sampling) ---
         if eval_dataloader is not None and (epoch + 1) % args.eval_interval == 0:
             logging.info(f"--- Starting evaluation sampling for Epoch {epoch+1} ({args.num_eval_samples} samples) ---")
@@ -658,6 +731,10 @@ def train(args):
                         break
 
             logging.info(f"--- Finished evaluation sampling for Epoch {epoch+1} ---")
+
+            # Clean MPS cache after evaluation
+            if clean_mps_cache():
+                logging.info("MPS cache cleaned after evaluation")
 
 
         # --- Save Regular Checkpoint ---
@@ -749,7 +826,7 @@ if __name__ == "__main__":
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
     parser.add_argument('--num_workers', type=int, default=2, help='Number of workers for DataLoader')
-    parser.add_argument('--save_interval', type=int, default=50, help='Save checkpoint every N epochs')
+    parser.add_argument('--save_interval', type=int, default=20, help='Save checkpoint every N epochs')
     parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
     parser.add_argument('--num_eval_samples', type=int, default=32, help='Number of samples to generate during evaluation') # Added num_eval_samples
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use if available')
@@ -758,7 +835,7 @@ if __name__ == "__main__":
     # State Augmentation Parameters
     parser.add_argument('--state_aug_enabled', action='store_true', help='Enable state augmentation during training')
     parser.add_argument('--state_aug_noise_type', type=str, default='gaussian', choices=['gaussian', 'uniform', 'scaled'], help='Type of noise to apply for state augmentation')
-    parser.add_argument('--state_aug_noise_scale', type=float, default=0.1, help='Scale of noise to apply for state augmentation')
+    parser.add_argument('--state_aug_noise_scale', type=float, default=0.02, help='Scale of noise to apply for state augmentation')
     parser.add_argument('--state_aug_noise_schedule', type=str, default='constant', choices=['constant', 'linear_decay', 'cosine_decay'], help='How noise scale changes over training')
     parser.add_argument('--state_aug_random_drop_prob', type=float, default=0.0, help='Probability of randomly zeroing out a joint value (0.0 to disable)')
     parser.add_argument('--state_aug_clip_min', type=float, default=None, help='Minimum value to clip augmented state (None for no clipping)')
@@ -773,6 +850,10 @@ if __name__ == "__main__":
     # Add this to your argument parser
     parser.add_argument('--pin_memory', action='store_true', help='Use pinned memory for faster data transfer to GPU')
     parser.set_defaults(pin_memory=True)  # Enable by default
+
+    # Dataset splitting parameters
+    parser.add_argument('--val_split_ratio', type=float, default=0.3, help='Ratio of data to use for validation when using a single dataset (default: 0.2)')
+    parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducible dataset splitting (default: 42)')
 
     args = parser.parse_args()
 

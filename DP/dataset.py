@@ -91,7 +91,8 @@ class RobotEpisodeDataset(Dataset):
             return
 
         # Limit the number of collection directories to process based on self.num_episodes
-        collection_dirs_to_process = collection_dirs_all[:self.num_episodes if self.num_episodes > 0 else len(collection_dirs_all)]
+        # If num_episodes is 0, use all available episodes
+        collection_dirs_to_process = collection_dirs_all if self.num_episodes <= 0 else collection_dirs_all[:self.num_episodes]
 
         for collection_name in collection_dirs_to_process:
             collection_path = os.path.join(self.base_dir, collection_name)
@@ -139,7 +140,8 @@ class RobotEpisodeDataset(Dataset):
             return
 
         # Limit the number of episode directories to process
-        episode_dirs_to_process = episode_dirs_all[:self.num_episodes if self.num_episodes > 0 else len(episode_dirs_all)]
+        # If num_episodes is 0, use all available episodes
+        episode_dirs_to_process = episode_dirs_all if self.num_episodes <= 0 else episode_dirs_all[:self.num_episodes]
 
         for episode_name in episode_dirs_to_process:
             episode_dir = os.path.join(self.base_dir, episode_name)
