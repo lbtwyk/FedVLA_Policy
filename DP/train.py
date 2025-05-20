@@ -359,11 +359,11 @@ def train(args):
             train_dataset_args = {
                 'base_dir': args.data_dir,
                 'num_episodes': args.num_episodes,
-                'flat_structure': args.data_dir.endswith('mycobot_episodes')  # Auto-detect structure
+                'flat_structure': True  # Use flat structure as default
             }
             if 'transform' in sig.parameters: train_dataset_args['transform'] = image_transform
 
-            logging.info(f"Loading training dataset from {args.data_dir} with {'flat' if train_dataset_args['flat_structure'] else 'nested'} structure")
+            logging.info(f"Loading training dataset from {args.data_dir} with flat structure")
             train_dataset = RobotEpisodeDataset(**train_dataset_args)
 
             if len(train_dataset) == 0:
@@ -375,11 +375,11 @@ def train(args):
                 eval_dataset_args = {
                     'base_dir': args.eval_data_dir,
                     'num_episodes': args.eval_num_episodes if args.eval_num_episodes else args.num_episodes,
-                    'flat_structure': args.eval_data_dir.endswith('mycobot_episodes') or args.eval_data_dir.endswith('mycobot_episodes_val')
+                    'flat_structure': True  # Use flat structure as default
                 }
                 if 'transform' in sig.parameters: eval_dataset_args['transform'] = image_transform
 
-                logging.info(f"Loading evaluation dataset from {args.eval_data_dir} with {'flat' if eval_dataset_args['flat_structure'] else 'nested'} structure")
+                logging.info(f"Loading evaluation dataset from {args.eval_data_dir} with flat structure")
                 eval_dataset = RobotEpisodeDataset(**eval_dataset_args)
 
                 if eval_dataset is None or len(eval_dataset) == 0:
@@ -392,19 +392,17 @@ def train(args):
                 eval_dataloader = None
         else:
             # --- Load Single Dataset and Split ---
-            # Determine if the dataset has a flat or nested structure
-            is_flat_structure = args.data_dir.endswith('mycobot_episodes')
-
+            # Use flat structure as default
             logging.info(f"Using single dataset with train/val split (ratio: {args.val_split_ratio})")
 
             full_dataset_args = {
                 'base_dir': args.data_dir,
                 'num_episodes': 0,  # Load all episodes
-                'flat_structure': is_flat_structure
+                'flat_structure': True  # Use flat structure as default
             }
             if 'transform' in sig.parameters: full_dataset_args['transform'] = image_transform
 
-            logging.info(f"Loading full dataset from {args.data_dir} with {'flat' if is_flat_structure else 'nested'} structure for train/val split")
+            logging.info(f"Loading full dataset from {args.data_dir} with flat structure for train/val split")
             full_dataset = RobotEpisodeDataset(**full_dataset_args)
 
             if len(full_dataset) == 0:
@@ -796,7 +794,7 @@ if __name__ == "__main__":
 
     # Paths and Directories
     parser.add_argument('--data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for training dataset')
-    parser.add_argument('--eval_data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes_val', help='Base directory for evaluation dataset')
+    parser.add_argument('--eval_data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for evaluation dataset')
     parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints')
     parser.add_argument('--num_episodes', type=int, default=97, help='Number of episodes to load for training')
     parser.add_argument('--eval_num_episodes', type=int, default=32, help='Number of episodes for evaluation (uses num_episodes if None)')
@@ -852,7 +850,7 @@ if __name__ == "__main__":
     parser.set_defaults(pin_memory=True)  # Enable by default
 
     # Dataset splitting parameters
-    parser.add_argument('--val_split_ratio', type=float, default=0.3, help='Ratio of data to use for validation when using a single dataset (default: 0.2)')
+    parser.add_argument('--val_split_ratio', type=float, default=0.2, help='Ratio of data to use for validation when using a single dataset (default: 0.2)')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducible dataset splitting (default: 42)')
 
     args = parser.parse_args()

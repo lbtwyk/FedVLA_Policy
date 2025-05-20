@@ -25,7 +25,7 @@ class RobotEpisodeDataset(Dataset):
                  num_episodes: int,
                  episode_prefix: str = 'episode',
                  transform: Optional[Callable] = None, # Accept an optional transform
-                 flat_structure: bool = False # Flag to indicate if the dataset has a flat structure
+                 flat_structure: bool = True # Flag to indicate if the dataset has a flat structure (default: True)
                 ):
         """
         Initializes the dataset.
@@ -36,8 +36,8 @@ class RobotEpisodeDataset(Dataset):
             episode_prefix (str, optional): Prefix for episode directory names. Defaults to 'episode'.
             transform (callable, optional): Optional transform to be applied
                                              on a sample image. Defaults to None.
-            flat_structure (bool, optional): If True, assumes episodes are directly in base_dir.
-                                            If False (default), assumes collection/episode nested structure.
+            flat_structure (bool, optional): If True (default), assumes episodes are directly in base_dir.
+                                            If False, assumes collection/episode nested structure.
         """
         super().__init__()
         self.base_dir = base_dir
