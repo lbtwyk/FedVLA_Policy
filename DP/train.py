@@ -796,13 +796,13 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for training dataset')
     parser.add_argument('--eval_data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for evaluation dataset')
     parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints')
-    parser.add_argument('--num_episodes', type=int, default=97, help='Number of episodes to load for training')
+    parser.add_argument('--num_episodes', type=int, default=300, help='Number of episodes to load for training')
     parser.add_argument('--eval_num_episodes', type=int, default=32, help='Number of episodes for evaluation (uses num_episodes if None)')
 
     # Model Hyperparameters
     parser.add_argument('--state_dim', type=int, default=7, help='Dimension of the state vector')
-    parser.add_argument('--image_size', type=int, default=224, help='Size to resize images to')
-    parser.add_argument('--image_feature_dim', type=int, default=512, help='Feature dimension from ResNet backbone')
+    parser.add_argument('--image_size', type=int, default=300, help='Size to resize images to (e.g., 224, 256, 300)')
+    parser.add_argument('--image_feature_dim', type=int, default=2048, help='Feature dimension from ResNet backbone (e.g., 512 for ResNet-34, 2048 for ResNet-50)')
     parser.add_argument('--time_emb_dim', type=int, default=64, help='Dimension for timestep embedding')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for MLP layers')
     parser.add_argument('--num_mlp_layers', type=int, default=4, help='Number of MLP layers')

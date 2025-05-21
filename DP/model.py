@@ -74,19 +74,19 @@ class MLPBlock(nn.Module):
 class DiffusionPolicyModel(nn.Module):
     """
     A diffusion policy model that predicts noise based on state, timestep,
-    and image features extracted via ResNet-34.
+    and image features extracted via ResNet-50.
     """
     def __init__(self,
                  state_dim: int,
                  time_emb_dim: int = 64,
                  hidden_dim: int = 256,
                  num_layers: int = 4,
-                 image_feature_dim: int = 512, # ResNet-34 output feature dim
+                 image_feature_dim: int = 2048, # ResNet-50 output feature dim
                  use_pretrained_resnet: bool = True,
                  freeze_resnet: bool = True
                 ):
         """
-        Initializes the Diffusion Policy Model with ResNet-34 image backbone.
+        Initializes the Diffusion Policy Model with ResNet-50 image backbone.
 
         Args:
             state_dim (int): The dimensionality of the input state vector
@@ -95,7 +95,7 @@ class DiffusionPolicyModel(nn.Module):
             hidden_dim (int, optional): Dimensionality of hidden layers. Defaults to 256.
             num_layers (int, optional): Number of MLP blocks. Defaults to 4.
             image_feature_dim (int, optional): Expected dimensionality of ResNet features.
-                                               Defaults to 512 (ResNet-18/34).
+                                               Defaults to 2048 (ResNet-50).
             use_pretrained_resnet (bool, optional): Whether to load pretrained weights for ResNet.
                                                     Defaults to True.
             freeze_resnet (bool, optional): Whether to freeze ResNet weights during training.
@@ -107,9 +107,9 @@ class DiffusionPolicyModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.image_feature_dim = image_feature_dim
 
-        # --- Image Backbone (ResNet-34) ---
-        weights = models.ResNet34_Weights.DEFAULT if use_pretrained_resnet else None
-        resnet = models.resnet34(weights=weights)
+        # --- Image Backbone (ResNet-50) ---
+        weights = models.ResNet50_Weights.DEFAULT if use_pretrained_resnet else None
+        resnet = models.resnet50(weights=weights)
 
         # Remove the final classification layer (fc) and the avg pooling layer
         # We'll add our own adaptive pooling
@@ -118,25 +118,25 @@ class DiffusionPolicyModel(nn.Module):
         # Add adaptive average pooling to get a fixed-size output regardless of input image size
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
 
-        # --- CORRECTED WAY TO GET OUTPUT CHANNELS ---
+        # --- CORRECTED WAY TO GET OUTPUT CHANNELS FOR RESNET-50 ---
         # Access the last block of the last layer (layer4)
-        # For ResNet-18/34, the blocks are BasicBlock
+        # For ResNet-50, the blocks are Bottleneck
         last_block = resnet.layer4[-1]
-        # The output channels are determined by the second conv layer in the BasicBlock
-        _resnet_output_channels = last_block.conv2.out_channels
+        # The output channels are determined by the third conv layer in the Bottleneck block
+        _resnet_output_channels = last_block.conv3.out_channels
         # --- END CORRECTION ---
 
         if _resnet_output_channels != image_feature_dim:
              logging.warning(f"Provided image_feature_dim ({image_feature_dim}) doesn't match "
-                             f"ResNet-34 output channels ({_resnet_output_channels}). Using {_resnet_output_channels}.")
+                             f"ResNet-50 output channels ({_resnet_output_channels}). Using {_resnet_output_channels}.")
              self.image_feature_dim = _resnet_output_channels # Correct the dimension
 
         if freeze_resnet:
             for param in self.image_backbone.parameters():
                 param.requires_grad = False
-            logging.info("ResNet backbone weights frozen.")
+            logging.info("ResNet-50 backbone weights frozen.")
         else:
-             logging.info("ResNet backbone weights will be fine-tuned.")
+             logging.info("ResNet-50 backbone weights will be fine-tuned.")
         # --- End Image Backbone ---
 
 
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     STATE_DIM = 7  # 6 joint angles + 1 gripper value
     IMAGE_H, IMAGE_W = 224, 224 # Example ResNet standard input size
     BATCH_SIZE = 4
-    IMAGE_FEATURE_DIM = 512 # ResNet-34 output feature dim before FC layer
+    IMAGE_FEATURE_DIM = 2048 # ResNet-50 output feature dim before FC layer
 
     # Instantiate the model
     model = DiffusionPolicyModel(
@@ -251,7 +251,7 @@ if __name__ == "__main__":
     print("-" * 30)
     # Note: Printing the full model is very verbose due to ResNet
     # print(f"Model Architecture:\n{model}")
-    print("DiffusionPolicyModel with ResNet-34 backbone initialized.")
+    print("DiffusionPolicyModel with ResNet-50 backbone initialized.")
     print("-" * 30)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in model.parameters())
