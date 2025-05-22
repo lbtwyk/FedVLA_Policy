@@ -12,6 +12,7 @@ import logging
 import argparse
 import math
 from typing import Optional, List, Tuple, Union, Dict
+import sys
 
 # Import custom modules
 from dataset import RobotEpisodeDataset # Assuming dataset.py is in the same directory
@@ -833,8 +834,8 @@ if __name__ == "__main__":
     # State Augmentation Parameters
     parser.add_argument('--state_aug_enabled', action='store_true', help='Enable state augmentation during training')
     parser.add_argument('--state_aug_noise_type', type=str, default='gaussian', choices=['gaussian', 'uniform', 'scaled'], help='Type of noise to apply for state augmentation')
-    parser.add_argument('--state_aug_noise_scale', type=float, default=0.02, help='Scale of noise to apply for state augmentation')
-    parser.add_argument('--state_aug_noise_schedule', type=str, default='constant', choices=['constant', 'linear_decay', 'cosine_decay'], help='How noise scale changes over training')
+    parser.add_argument('--state_aug_noise_scale', type=float, default=0.05, help='Scale of noise to apply for state augmentation')
+    parser.add_argument('--state_aug_noise_schedule', type=str, default='cosine_decay', choices=['constant', 'linear_decay', 'cosine_decay'], help='How noise scale changes over training')
     parser.add_argument('--state_aug_random_drop_prob', type=float, default=0.0, help='Probability of randomly zeroing out a joint value (0.0 to disable)')
     parser.add_argument('--state_aug_clip_min', type=float, default=None, help='Minimum value to clip augmented state (None for no clipping)')
     parser.add_argument('--state_aug_clip_max', type=float, default=None, help='Maximum value to clip augmented state (None for no clipping)')
@@ -868,4 +869,10 @@ if __name__ == "__main__":
     for arg, value in sorted(vars(args).items()):
         logging.info(f"  {arg}: {value}")
 
-    train(args)
+    confirm = input("\nProceed with training using the above arguments? (yes/no): ").strip().lower()
+    if confirm in ['yes', 'y']:
+        logging.info("User confirmed. Starting training...")
+        train(args)
+    else:
+        logging.info("Training cancelled by user.")
+        sys.exit("Training cancelled by user.")

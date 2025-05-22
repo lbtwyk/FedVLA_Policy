@@ -35,6 +35,9 @@ env/
 ENV/
 dp_venv/
 
+# Datasets / Large Episode Data
+mycobot_episodes/
+
 # IDE
 .vscode/
 .idea/
