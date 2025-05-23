@@ -1,1 +1,14 @@
-mycobot_episodes/** filter=lfs diff=lfs merge=lfs -text
+# Use Git LFS for episode data
+mycobot_episodes/**/*.png filter=lfs diff=lfs merge=lfs -text
+mycobot_episodes/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+mycobot_episodes/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+mycobot_episodes/**/states.json filter=lfs diff=lfs merge=lfs -text
+
+# Also track any other large files that might be added later
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.avi filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
+*.pkl filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.safetensors filter=lfs diff=lfs merge=lfs -text
