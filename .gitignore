@@ -35,8 +35,6 @@ env/
 ENV/
 dp_venv/
 
-# Datasets / Large Episode Data
-
 # IDE
 .vscode/
 .idea/
@@ -48,4 +46,6 @@ dp_venv/
 
 # Logs
 *.log
+
 mycobot_episodes/
+mycobot_episodes_degrees/

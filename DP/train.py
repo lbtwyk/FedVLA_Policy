@@ -12,7 +12,6 @@ import logging
 import argparse
 import math
 from typing import Optional, List, Tuple, Union, Dict
-import sys
 
 # Import custom modules
 from dataset import RobotEpisodeDataset # Assuming dataset.py is in the same directory
@@ -794,16 +793,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Diffusion Policy Model")
 
     # Paths and Directories
-    parser.add_argument('--data_dir', type=str, default='../mycobot_episodes', help='Base directory for training dataset')
-    parser.add_argument('--eval_data_dir', type=str, default='../mycobot_episodes', help='Base directory for evaluation dataset')
+    parser.add_argument('--data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for training dataset')
+    parser.add_argument('--eval_data_dir', type=str, default='/Users/lambertwang/Downloads/FedVLA_latest/mycobot_episodes', help='Base directory for evaluation dataset')
     parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints')
     parser.add_argument('--num_episodes', type=int, default=300, help='Number of episodes to load for training')
     parser.add_argument('--eval_num_episodes', type=int, default=32, help='Number of episodes for evaluation (uses num_episodes if None)')
 
     # Model Hyperparameters
     parser.add_argument('--state_dim', type=int, default=7, help='Dimension of the state vector')
-    parser.add_argument('--image_size', type=int, default=300, help='Size to resize images to (e.g., 224, 256, 300)')
-    parser.add_argument('--image_feature_dim', type=int, default=512, help='Feature dimension from ResNet backbone (e.g., 512 for ResNet-34, 2048 for ResNet-50)')
+    parser.add_argument('--image_size', type=int, default=224, help='Size to resize images to')
+    parser.add_argument('--image_feature_dim', type=int, default=512, help='Feature dimension from ResNet backbone')
     parser.add_argument('--time_emb_dim', type=int, default=64, help='Dimension for timestep embedding')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for MLP layers')
     parser.add_argument('--num_mlp_layers', type=int, default=4, help='Number of MLP layers')
@@ -821,12 +820,12 @@ if __name__ == "__main__":
     # Training Hyperparameters
     parser.add_argument('--num_epochs', type=int, default=500, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
-    parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
+    parser.add_argument('--eval_batch_size', type=int, default=16, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-4, help='Optimizer weight decay')
-    parser.add_argument('--num_workers', type=int, default=2, help='Number of workers for DataLoader')
+    parser.add_argument('--weight_decay', type=float, default=1e-6, help='Optimizer weight decay')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
     parser.add_argument('--save_interval', type=int, default=20, help='Save checkpoint every N epochs')
-    parser.add_argument('--eval_interval', type=int, default=5, help='Evaluate model every N epochs (set to 0 to disable)')
+    parser.add_argument('--eval_interval', type=int, default=10, help='Evaluate model every N epochs (set to 0 to disable)')
     parser.add_argument('--num_eval_samples', type=int, default=32, help='Number of samples to generate during evaluation') # Added num_eval_samples
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use if available')
     parser.add_argument('--resume_from', type=str, default=None, help='Path to checkpoint file to resume training from')
@@ -869,10 +868,4 @@ if __name__ == "__main__":
     for arg, value in sorted(vars(args).items()):
         logging.info(f"  {arg}: {value}")
 
-    confirm = input("\nProceed with training using the above arguments? (yes/no): ").strip().lower()
-    if confirm in ['yes', 'y']:
-        logging.info("User confirmed. Starting training...")
-        train(args)
-    else:
-        logging.info("Training cancelled by user.")
-        sys.exit("Training cancelled by user.")
+    train(args)
