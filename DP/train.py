@@ -23,19 +23,30 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Helper Functions ---
 
-def clean_mps_cache():
+def clean_mps_cache(force_gc=True):
     """
-    Cleans the MPS cache to prevent memory explosion on Apple Silicon hardware.
+    Enhanced MPS cache cleaning to prevent memory explosion on Apple Silicon hardware.
     This function should be called periodically during long training runs.
+    
+    Args:
+        force_gc: Whether to force garbage collection (default: True)
     """
-    # Check if MPS is available
     if torch.backends.mps.is_available():
-        # Force garbage collection
-        import gc
-        gc.collect()
-
+        if force_gc:
+            # Force garbage collection multiple times for thorough cleanup
+            import gc
+            for _ in range(3):
+                gc.collect()
+        
+        # Synchronize MPS operations before clearing cache
+        torch.mps.synchronize()
+        
         # Empty MPS cache
         torch.mps.empty_cache()
+        
+        # Additional synchronization after cache clear
+        torch.mps.synchronize()
+        
         return True
     return False
 
@@ -149,10 +160,14 @@ def p_sample_loop(model: nn.Module, shape: tuple, timesteps: int,
         if device.type == "mps":
             torch.mps.synchronize()
 
-            # Periodically clean MPS cache during long sampling processes
-            # Clean every 100 steps to avoid too frequent cleaning
-            if i % 100 == 0 and i > 0:
-                clean_mps_cache()
+            # More aggressive MPS cache cleaning during sampling
+            # Clean every 50 steps for better memory management
+            if i % 50 == 0 and i > 0:
+                clean_mps_cache(force_gc=False)  # Skip GC during sampling for speed
+            
+            # Major cleanup at key intervals
+            if i % 200 == 0 and i > 0:
+                clean_mps_cache(force_gc=True)
 
     # img now holds the predicted x_0
 
@@ -528,6 +543,20 @@ def train(args):
                 model.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 start_epoch = checkpoint['epoch']
+                
+                # Extract checkpoint number from filename for proper naming continuation
+                checkpoint_filename = os.path.basename(args.resume_from)
+                if 'model_epoch_' in checkpoint_filename:
+                    # Extract epoch number from filename like "model_epoch_100.pth"
+                    try:
+                        resumed_epoch = int(checkpoint_filename.split('model_epoch_')[1].split('.pth')[0])
+                        start_epoch = resumed_epoch
+                        logging.info(f"Extracted epoch {resumed_epoch} from checkpoint filename")
+                    except (ValueError, IndexError):
+                        logging.warning(f"Could not extract epoch from filename {checkpoint_filename}, using checkpoint epoch {start_epoch}")
+                elif 'model_best.pth' in checkpoint_filename:
+                    logging.info(f"Resuming from best model checkpoint at epoch {start_epoch}")
+                
                 if 'eval_metric' in checkpoint:
                     best_eval_metric = checkpoint['eval_metric']
                     logging.info(f"Resuming from epoch {start_epoch} with best eval metric: {best_eval_metric:.4f}")
@@ -576,6 +605,9 @@ def train(args):
 
     # --- Training Loop ---
     logging.info("Starting training...")
+    
+    # Track the last evaluation metric for regular checkpoints
+    last_eval_metric = None
 
     for epoch in range(start_epoch, args.num_epochs):
         model.train()
@@ -629,6 +661,10 @@ def train(args):
             global_step += 1
             batches_processed_this_epoch += 1
             progress_bar.set_postfix(loss=loss.item())
+            
+            # Clean MPS cache periodically during training to prevent memory buildup
+            if device.type == "mps" and batch_idx % 50 == 0 and batch_idx > 0:
+                clean_mps_cache(force_gc=False)
 
 
         # --- End of Epoch ---
@@ -639,9 +675,16 @@ def train(args):
              logging.warning(f"Epoch {epoch+1}/{args.num_epochs} completed without processing any training batches.")
              avg_epoch_loss = float('inf')
 
-        # --- Clean MPS Cache after each epoch ---
-        if clean_mps_cache():
-            logging.info("MPS cache cleaned after epoch completion")
+        # --- Enhanced MPS Cache cleaning after each epoch ---
+        if device.type == "mps":
+            # Force thorough cleanup after each epoch
+            clean_mps_cache(force_gc=True)
+            logging.info("MPS cache thoroughly cleaned after epoch completion")
+            
+            # Additional memory pressure relief
+            import gc
+            gc.collect()
+            torch.mps.synchronize()
 
         # --- Evaluation Step (Sampling) ---
         if eval_dataloader is not None and (epoch + 1) % args.eval_interval == 0:
@@ -652,6 +695,9 @@ def train(args):
                 sqrt_recip_alphas, posterior_variance, args.num_eval_samples
             )
             logging.info(f"Epoch {epoch+1}/{args.num_epochs} Evaluation Avg State MSE: {avg_eval_mse:.4f}")
+            
+            # Update last evaluation metric for regular checkpoints
+            last_eval_metric = avg_eval_mse
 
             # Save best model based on eval MSE (lower is better)
             if avg_eval_mse < best_eval_metric:
@@ -730,9 +776,13 @@ def train(args):
 
             logging.info(f"--- Finished evaluation sampling for Epoch {epoch+1} ---")
 
-            # Clean MPS cache after evaluation
-            if clean_mps_cache():
-                logging.info("MPS cache cleaned after evaluation")
+            # Aggressive MPS cache cleaning after evaluation (most memory-intensive operation)
+            if device.type == "mps":
+                # Multiple cleanup passes after evaluation
+                for cleanup_pass in range(2):
+                    clean_mps_cache(force_gc=True)
+                    torch.mps.synchronize()
+                logging.info("MPS cache aggressively cleaned after evaluation")
 
 
         # --- Save Regular Checkpoint ---
@@ -747,6 +797,11 @@ def train(args):
                     'train_loss': avg_epoch_loss, # Store training loss
                     'args': vars(args)
                 }
+                
+                # Include eval_metric if evaluation was performed recently
+                if last_eval_metric is not None:
+                    checkpoint_data['eval_metric'] = last_eval_metric
+                    logging.info(f"Including eval_metric {last_eval_metric:.4f} in regular checkpoint")
 
                 if args.state_aug_enabled:
                     checkpoint_data['state_aug_params'] = {
@@ -775,6 +830,11 @@ def train(args):
                 # Save checkpoint without weights_only parameter for compatibility with older PyTorch versions
                 torch.save(checkpoint_data, checkpoint_path)
                 logging.info(f"Saved checkpoint to {checkpoint_path}")
+                
+                # Clean MPS cache after checkpoint saving to prevent memory buildup
+                if device.type == "mps":
+                    clean_mps_cache(force_gc=False)
+                    
             except Exception as e:
                  logging.error(f"Failed to save checkpoint at epoch {epoch+1}: {e}")
 
@@ -786,6 +846,25 @@ def train(args):
     else:
         logging.info(f"Training finished after completing all {args.num_epochs} epochs.")
         logging.info(f"Best validation metric: {best_eval_metric:.4f}")
+    
+    # Final comprehensive MPS cleanup to prevent system issues
+    if device.type == "mps":
+        logging.info("Performing final MPS cleanup...")
+        
+        # Clear any remaining model references
+        del model
+        del optimizer
+        
+        # Multiple aggressive cleanup passes
+        for final_cleanup in range(3):
+            clean_mps_cache(force_gc=True)
+            torch.mps.synchronize()
+        
+        # Final garbage collection
+        import gc
+        gc.collect()
+        
+        logging.info("Final MPS cleanup completed - system should be stable now")
 
 
 # --- Main Execution Block ---
@@ -818,14 +897,14 @@ if __name__ == "__main__":
     parser.add_argument('--beta_end', type=float, default=0.02, help='Ending value for linear beta schedule')
 
     # Training Hyperparameters
-    parser.add_argument('--num_epochs', type=int, default=500, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
-    parser.add_argument('--eval_batch_size', type=int, default=16, help='Batch size for evaluation sampling (often needs to be smaller due to sampling loop memory)') # Reduced eval batch size
+    parser.add_argument('--num_epochs', type=int, default=2000, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--eval_batch_size', type=int, default=8, help='Batch size for evaluation sampling (reduced for MPS memory management)') # Further reduced for MPS
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Optimizer learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-6, help='Optimizer weight decay')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for DataLoader')
+    parser.add_argument('--num_workers', type=int, default=2, help='Number of workers for DataLoader')
     parser.add_argument('--save_interval', type=int, default=20, help='Save checkpoint every N epochs')
-    parser.add_argument('--eval_interval', type=int, default=10, help='Evaluate model every N epochs (set to 0 to disable)')
+    parser.add_argument('--eval_interval', type=int, default=20, help='Evaluate model every N epochs (set to 0 to disable)')
     parser.add_argument('--num_eval_samples', type=int, default=32, help='Number of samples to generate during evaluation') # Added num_eval_samples
     parser.add_argument('--gpu_id', type=int, default=0, help='GPU ID to use if available')
     parser.add_argument('--resume_from', type=str, default=None, help='Path to checkpoint file to resume training from')
@@ -858,6 +937,27 @@ if __name__ == "__main__":
     if os.name == 'nt' and args.num_workers > 0:
          logging.warning("Setting num_workers > 0 on Windows can cause issues. Forcing num_workers = 0.")
          args.num_workers = 0
+
+    # MPS-specific optimizations for Apple Silicon
+    if torch.backends.mps.is_available():
+        logging.info("MPS detected - applying Apple Silicon optimizations")
+        
+        # Reduce batch sizes for better memory management on MPS
+        if args.batch_size > 32:
+            original_batch_size = args.batch_size
+            args.batch_size = 32
+            logging.warning(f"Reduced training batch_size from {original_batch_size} to {args.batch_size} for MPS stability")
+        
+        if args.eval_batch_size > 8:
+            original_eval_batch_size = args.eval_batch_size
+            args.eval_batch_size = 8
+            logging.warning(f"Reduced eval_batch_size from {original_eval_batch_size} to {args.eval_batch_size} for MPS stability")
+        
+        # Reduce num_workers for MPS
+        if args.num_workers > 4:
+            original_num_workers = args.num_workers
+            args.num_workers = 4
+            logging.warning(f"Reduced num_workers from {original_num_workers} to {args.num_workers} for MPS stability")
 
     # Ensure eval_interval > 0 if we want evaluation
     if args.eval_interval <= 0:

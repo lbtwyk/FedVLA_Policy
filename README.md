@@ -2,6 +2,14 @@
 
 This repository contains the implementation of a diffusion policy model for robot control, based on the FedVLA (Federated Vision-Language-Action) framework. The diffusion policy model learns to predict robot actions (joint angles and gripper state) from visual observations using a denoising diffusion probabilistic model (DDPM) approach.
 
+## Demo
+
+Watch the FedVLA inference in action:
+
+![Demo Video](./fl_inference_demo.mp4)
+
+*The demo shows the diffusion policy model performing real-time robot control with visual feedback.*
+
 ## Overview
 
 The diffusion policy model is a conditional generative model that:

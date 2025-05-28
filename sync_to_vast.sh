@@ -54,8 +54,7 @@ rsync -avz -e "ssh -p $PORT" \
     --exclude='*.pyc' \
     --exclude='__pycache__' \
     --exclude='.DS_Store' \
-    --exclude='checkpoints' \
-    --exclude='DP/checkpoints' \
+    --exclude='/checkpoints' \
     --exclude='DP/dp_venv' \
     --exclude='.dist' \
     ./ root@$IP_ADDRESS:/workspace/FedVLA_Policy/

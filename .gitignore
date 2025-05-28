@@ -34,10 +34,15 @@ venv/
 env/
 ENV/
 dp_venv/
+fedvla_env/
 
 # IDE
 .vscode/
 .idea/
+
+# Cursor
+.cursor/
+.cursorrules
 
 # Mac
 .DS_Store
@@ -47,5 +52,44 @@ dp_venv/
 # Logs
 *.log
 
+# Checkpoints and model files
+checkpoints/
+*/checkpoints/
+*.checkpoint
+*.model
+*.weights
+
+# Images and media (except specific demo files)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+# Keep specific demo video
+!fl_inference_demo.mp4
+
+# Data directories
 mycobot_episodes/
 mycobot_episodes_degrees/
+plots/
+.dist/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+monitor_mps_memory.py
+plot_training_curves_realistic.py
+start_training.sh
+sync_episodes.sh
+sync_to_vast.sh
