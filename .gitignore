@@ -67,8 +67,6 @@ checkpoints/
 *.bmp
 *.tiff
 *.svg
-# Keep specific demo video
-!fl_inference_demo.mp4
 
 # Data directories
 mycobot_episodes/

@@ -6,7 +6,7 @@ This repository contains the implementation of a diffusion policy model for robo
 
 Watch the FedVLA inference in action:
 
-![Demo Video](./fl_inference_demo.mp4)
+[🎥 View Demo Video](https://liveuclac-my.sharepoint.com/:v:/g/personal/zcabaax_ucl_ac_uk/EYtNW_m0uf9CknEi12tfdVcBMjQBGibRLapVYdBSpMbGwA?nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJPbmVEcml2ZUZvckJ1c2luZXNzIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXciLCJyZWZlcnJhbFZpZXciOiJNeUZpbGVzTGlua0NvcHkifX0&e=HV1eUH)
 
 *The demo shows the diffusion policy model performing real-time robot control with visual feedback.*
 
